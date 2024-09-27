@@ -1,0 +1,123 @@
+import os
+import numpy as np
+import torch
+import legacy
+import dnnlib
+from time import perf_counter # measures execution time of random walk
+import click
+from PIL import Image
+
+# based off of projector.py from this github repository https://github.com/NVlabs/stylegan2-ada-pytorch/blob/main/projector.py
+
+# function to generate random walk in latent space
+def generate_random_walk(
+    G, # load styleGAN2
+    w_avg: np.ndarray, # used as starting point of random walk
+    num_steps: int = 1000,
+    step_size: float = 0.1,
+    device=None
+):
+
+    if device is None:
+      device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # start from the average latent vector
+    w_current = torch.tensor(w_avg, dtype=torch.float32, device=device) # current latent vector -> intialized as w_avg
+    w_out = torch.zeros([num_steps] + list(w_current.shape[1:]), dtype=torch.float32, device=device) # used to store the generated latent vectors
+
+    for step in range(num_steps):
+        # apply random step to the current latent vector
+        w_random_step = torch.randn_like(w_current) * step_size # generates a random perturbation from a normal distribution & scales by step size
+        w_current = w_current + w_random_step # update the average/current latent vector using the random step
+        w_out[step] = w_current.detach()  # Store the current latent vector
+
+    return w_out # returns the latent vectors generated
+
+# save the generated latent vectors to .npz files
+def save_latent_vectors_as_npz(w_out, outdir):
+    os.makedirs(outdir, exist_ok=True)
+    # Save the latent vectors at each step as a .npz file
+    for step in range(w_out.shape[0]):
+        np.savez(f'{outdir}/latent_vector_step_{step}.npz', w=w_out[step].cpu().numpy())
+
+# generate images from latent vectors
+def generate_images_from_latent_vectors(G, latent_vectors, outdir, device):
+    os.makedirs(outdir, exist_ok=True)
+
+    for step, latent_vector in enumerate(latent_vectors):
+        # convert the latent vector to a tensor
+        w_tensor = torch.tensor(latent_vector, dtype=torch.float32, device=device)
+
+        # repeat the latent vector for all layers (18 times)
+        w_tensor = w_tensor.unsqueeze(0).repeat([1, G.num_ws, 1])  # repeat w for each layer
+
+        # generate image from the latent vector
+        with torch.no_grad():
+            img = G.synthesis(w_tensor, noise_mode='const')
+
+        # convert to PIL image and save
+        img = (img.clamp(-1, 1) + 1) * (255 / 2)  # convert to [0, 255] range
+        img = img.permute(0, 2, 3, 1).cpu().numpy().astype(np.uint8)  # convert to HWC format
+
+        # save the image for this step
+        img_pil = Image.fromarray(img[0])
+        img_pil.save(f'{outdir}/image_step_{step}.png')
+        print(f'Saved image for step {step}.')
+
+#load latent vectors from saved .npz files
+def load_latent_vectors(npz_files):
+    latent_vectors = []
+    for npz_file in npz_files:
+        data = np.load(npz_file)
+        latent_vectors.append(data['w'])
+    return latent_vectors
+
+# these are all command line interface options (implemented in original projector.py script)
+# allows users to define StyleGAN2 network, output directory, number of random steps, and the step size
+@click.command() # defines the entry point for the command line interface
+@click.option('--network', 'network_pkl', help='Network pickle filename', required=True) # path to pretrained network
+@click.option('--outdir', 'outdir', help='Where to save the output latent vectors', required=True, metavar='DIR') # directory where output latent vectors will be saved
+@click.option('--num-steps', help='Number of random walk steps', type=int, default=1000, show_default=True) # num of random steps
+@click.option('--step-size', help='Size of each random step in latent space', type=float, default=0.1, show_default=True) # step size
+@click.option('--seed', help='Random seed', type=int, default=303, show_default=True) # seed for reproducability
+def run_random_walk(
+    network_pkl: str, # network file
+    outdir: str, # output directory
+    num_steps: int, # number of random steps
+    step_size: float, # random step size
+    seed: int # random seed
+):
+    """Generate a series of latent vectors using a random walk in the latent space of a pretrained network."""
+    # random seeds for both NumPy and pyTorch - for reproducibility
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    print(f'Loading networks from "{network_pkl}"...')
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')  # check if CUDA is available
+    # load the pretrained StyleGAN2
+    with dnnlib.util.open_url(network_pkl) as fp:
+        G = legacy.load_network_pkl(fp)['G_ema'].requires_grad_(False).to(device)
+
+    # compute the average latent vector (w_avg) --> allows us to calculate a starting point in latent space
+    w_avg_samples = 10000 # 10,000 random latent vectors are generated
+    z_samples = np.random.RandomState(123).randn(w_avg_samples, G.z_dim)
+    w_samples = G.mapping(torch.from_numpy(z_samples).to(device), None)
+    w_samples = w_samples[:, :1, :].cpu().numpy().astype(np.float32)
+    w_avg = np.mean(w_samples, axis=0, keepdims=True)
+
+    # generate latent vectors via random walk
+    print(f"Generating {num_steps} latent vectors using random walk...")
+    start_time = perf_counter() # measures how long the random walk generation took
+    w_out = generate_random_walk(G, w_avg, num_steps, step_size, device) # takes the generator G, the average latent vector, the number of steps, the step size, and the device
+    print(f'Elapsed: {(perf_counter()-start_time):.1f} s')
+
+    # save the latent vectors as .npz files
+    latent_outdir = os.path.join(outdir, 'latents')
+    save_latent_vectors_as_npz(w_out, outdir)
+
+    # convert latent vectors to images
+    print("Generating images from latent vectors...")
+    generate_images_from_latent_vectors(G, w_out.cpu().numpy(), os.path.join(outdir, 'images'), device)
+
+if __name__ == "__main__":
+    run_random_walk() # pylint: disable=no-value-for-parameter
