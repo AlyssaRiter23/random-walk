@@ -4,3 +4,6 @@ Repository for undergraduate research at The University of Notre Dame regarding 
 # StyleGAN2 Demo
 This was iterated upon from the work found in this github repository: https://github.com/NVlabs/stylegan2-ada-pytorch  
   colab notebook: https://colab.research.google.com/drive/1lerS3Kd7lEjnQ-weOVU-DrlCZpAtMxj7
+
+# InsightFace Embeddings
+colab notebook: https://colab.research.google.com/drive/17Q9YKvppBBReLsaPjW-eGGH-IH4bqrLs
