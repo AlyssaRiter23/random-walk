@@ -19,7 +19,7 @@ from insightface.app import FaceAnalysis
 import matplotlib.pyplot as plt
 
 # Loop through 1000 images
-for i in range(0, 999, 100):
+for i in range(0, 999, 25):
     # Create the image filename based on the index
     filename = f'/content/drive/MyDrive/research24/image_step_{i}.png'
 
@@ -48,7 +48,7 @@ app.prepare(ctx_id=0, det_size=(640, 640))
 
 # run detector on this face
 # loop through 1000 images
-for i in range(1, 999, 50):
+for i in range(1, 999, 25):
     # create the image filename based on the index
     filename = f'/content/drive/MyDrive/research24/image_step_{i}.png'
 
