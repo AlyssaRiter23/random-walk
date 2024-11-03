@@ -57,7 +57,7 @@ for i in range(0, 1000, 25):
         plt.pause(1)
         plt.clf()
 
-        # get the cropped faces from the detector & the embeddings
+        # get the cropped faces from the detector & the confidence
         crop_imgs = []
 
         for f in faces:
