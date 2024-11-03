@@ -59,6 +59,10 @@ for i in range(0, 1000, 25):
 
         # get the cropped faces from the detector & the confidence
         crop_imgs = []
+        
+        if not faces:
+          print(f'No faces detected in image {i}')
+          continue
 
         for f in faces:
           confidence = f.det_score
