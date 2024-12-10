@@ -1,19 +1,12 @@
-#!/usr/bin/env python
-
 import os
-import sys
 import numpy as np
 import torch
 import legacy
 import dnnlib
 from time import perf_counter # measures execution time of random walk
-from datetime import datetime
-import pytz
 import click
 from PIL import Image
 import subprocess
-
-
 
 # based off of projector.py from this github repository https://github.com/NVlabs/stylegan2-ada-pytorch/blob/main/projector.py
 
@@ -21,7 +14,7 @@ import subprocess
 def generate_random_walk(
     G, # load styleGAN2
     w_avg: np.ndarray, # used as starting point of random walk
-    num_steps: int = 1000,
+    num_steps: int = 100,
     step_size: float = 0.01, # change step size to 0.01 set of images that smoothly transition -> play until you get an obvious transition of images (limit on vector norm - if you go outside numpy.norm then tell it to stay within that ball -> put a guardian on it, generate a video of it (ffpeg)) inSIGHTFACE (all we want is detection)
     max_norm: float = None, # this will be computed using w_avg
     device=None
@@ -41,10 +34,10 @@ def generate_random_walk(
     if max_norm is None:
         max_norm = w_avg_norm * 1.5
 
-    if max_norm is not None:
-        print(f"w_avg norm: {w_avg_norm:.4f}, setting max_norm to: {max_norm:.4f}")
-    else:
-        print(f"w_avg norm: {w_avg_norm:.4f}, max_norm not set.")
+    #if max_norm is not None:
+     # print(f"w_avg norm: {w_avg_norm:.4f}, setting max_norm to: {max_norm:.4f}")
+    #else:
+     # print(f"w_avg norm: {w_avg_norm:.4f}, max_norm not set.")
 
     for step in range(num_steps):
         # apply random step to the current latent vector
@@ -62,35 +55,50 @@ def generate_random_walk(
 def save_latent_vectors_as_npz(w_out, outdir):
     os.makedirs(outdir, exist_ok=True)
     # Save the latent vectors at each step as a .npz file
-    #for step in range(w_out.shape[0]):
-        #np.savez(f'{outdir}/latent_vector_step_{step}.npz', w=w_out[step].cpu().numpy())
-    np.savez(f'{outdir}/latent_vectors.npz',w_out.cpu().numpy())
+    for step in range(w_out.shape[0]):
+        np.savez(f'{outdir}/latent_vector_step_{step}.npz', w=w_out[step].cpu().numpy())
 
 # generate images from latent vectors
-def synthesize_write_batch(G,batch,base,outdir):
-    batch = torch.stack(batch).squeeze()   # whee!
-    with torch.no_grad(): img_batch = G.synthesis(batch, noise_mode='const')
-    for i,img in enumerate(img_batch):
-        # scale image to [0,255] and convert it to h,w,c indexing
-        img = ((img.clamp(-1, 1) + 1) * (255/2)).permute(1,2,0).cpu().numpy().astype(np.uint8)
-        img_pil = Image.fromarray(img)
-        img_pil.save(f'{outdir}/image_step_{base+i}.png')
-        print(f'Saved image for step {base+i}.')
-    return
-
-def generate_images_from_latent_vectors(G, latent_vectors, outdir, device, batch_size):
+def generate_images_from_latent_vectors(G, latent_vectors, outdir, device):
     os.makedirs(outdir, exist_ok=True)
-    batch = []
-    for step, latent_vector in enumerate(latent_vectors):
-        w_tensor = torch.tensor(latent_vector, dtype=torch.float32, device=device)
-        w_tensor = w_tensor.unsqueeze(0).repeat([1, G.num_ws, 1])  # repeat w for each layer
-        batch.append(w_tensor)
-        if (len(batch) == batch_size):
-            synthesize_write_batch(G,batch,step-batch_size+1,outdir)
-            batch = []
-    if len(batch) > 0:
-        synthesize_write_batch(G,batch,step-len(batch)+1,outdir)
 
+    for step, latent_vector in enumerate(latent_vectors):
+        # convert the latent vector to a tensor
+        w_tensor = torch.tensor(latent_vector, dtype=torch.float32, device=device)
+
+        # repeat the latent vector for all layers (18 times)
+        w_tensor = w_tensor.unsqueeze(0).repeat([1, G.num_ws, 1])  # repeat w for each layer
+
+        # generate image from the latent vector
+        with torch.no_grad():
+            img = G.synthesis(w_tensor, noise_mode='const')
+
+        # convert to PIL image and save
+        img = (img.clamp(-1, 1) + 1) * (255 / 2)  # convert to [0, 255] range
+        img = img.permute(0, 2, 3, 1).cpu().numpy().astype(np.uint8)  # convert to HWC format
+
+        # save the image for this step
+        img_pil = Image.fromarray(img[0])
+        img_pil.save(f'{outdir}/image_step_{step}.png')
+        print(f'Saved image for step {step}.')
+
+# create video from generated images
+#def create_video_from_images(image_dir, video_path, fps=30):
+    # use ffmpeg to create a video from the images
+ #   cmd = [
+  #      'ffmpeg', '-framerate', str(fps), '-i', f'{image_dir}/image_step_%d.png',
+   #     '-c:v', 'libx264', '-pix_fmt', 'yuv420p', video_path
+    #]
+    #subprocess.run(cmd, check=True)
+    #print(f'Video saved to {video_path}')
+
+#load latent vectors from saved .npz files
+def load_latent_vectors(npz_files):
+    latent_vectors = []
+    for npz_file in npz_files:
+        data = np.load(npz_file)
+        latent_vectors.append(data['w'])
+    return latent_vectors
 
 # these are all command line interface options (implemented in original projector.py script)
 # allows users to define StyleGAN2 network, output directory, number of random steps, and the step size
@@ -100,29 +108,24 @@ def generate_images_from_latent_vectors(G, latent_vectors, outdir, device, batch
 @click.option('--num-steps', help='Number of random walk steps', type=int, default=1000, show_default=True) # num of random steps
 @click.option('--step-size', help='Size of each random step in latent space', type=float, default=0.1, show_default=True) # step size
 @click.option('--seed', help='Random seed', type=int, default=303, show_default=True) # seed for reproducability
-@click.option('--batch-size', help='Render batch size', type=int, default=10, show_default=True) # batch_size
+@click.option('--fps', help='Frames per second for the video', type=int, default=30, show_default=True)  # Add this option for fps
 def run_random_walk(
     network_pkl: str, # network file
     outdir: str, # output directory
     num_steps: int, # number of random steps
     step_size: float, # random step size
     seed: int, # random seed
-    batch_size
+    fps: int # frames per second
 ):
     """Generate a series of latent vectors using a random walk in the latent space of a pretrained network."""
     # random seeds for both NumPy and pyTorch - for reproducibility
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    # generate a timestamped output directory
-    est = pytz.timezone('America/New_York')
-    timestamp = datetime.now(est).strftime('%Y_%m_%d_%H_%M')
-    outdir = os.path.join(outdir, timestamp)
-
     print(f'Loading networks from "{network_pkl}"...')
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')  # check if CUDA is available
     # load the pretrained StyleGAN2
-    with dnnlib.util.open_url(network_pkl,cache_dir='.cache') as fp:
+    with dnnlib.util.open_url(network_pkl) as fp:
         G = legacy.load_network_pkl(fp)['G_ema'].requires_grad_(False).to(device)
 
     # compute the average latent vector (w_avg) --> allows us to calculate a starting point in latent space
@@ -144,9 +147,11 @@ def run_random_walk(
 
     # convert latent vectors to images
     print("Generating images from latent vectors...")
-    generate_images_from_latent_vectors(G, w_out.cpu().numpy(), os.path.join(outdir, 'images'), device, batch_size)
+    generate_images_from_latent_vectors(G, w_out.cpu().numpy(), os.path.join(outdir, 'images'), device)
 
-    print("Done.")
-
+    # create transition video
+    #print("Creating video from generated images...")
+    #video_path = os.path.join(outdir, 'latent_walk.mp4')
+    #create_video_from_images(os.path.join(outdir, 'images'), video_path, fps)
 if __name__ == "__main__":
     run_random_walk() # pylint: disable=no-value-for-parameter
