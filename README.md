@@ -25,3 +25,5 @@ InsightFace:<br />
   pip install onnxruntime-gpu<br />
   mkdir playground<br />
   cd playground<br />
+
+  # CSV files contains the image_step_*.png, confidence scores, vector embeddings
